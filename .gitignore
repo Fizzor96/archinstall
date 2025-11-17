@@ -1,0 +1,7 @@
+*.*
+
+!install.sh
+!.gitignore
+!runserver.sh
+!README.md
+!LICENSE
