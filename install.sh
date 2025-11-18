@@ -1,61 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
+clear; setfont ter-v22b
 
 # ==================== CONFIG ====================
 KEYMAP="hu"
 TIMEZONE="Europe/Budapest"
 DEFAULT_ROOT_GB=30
-LUKS_PASS="asd123"
+LUKS_PASS="123"
+HOSTNAME="arch"
+USERNAME="fizzor"
+ROOT_PASS="123"
+USER_PASS="123"
 EXTRA_PKGS=(vlc htop fastfetch alacritty neovim git curl wget unzip tree bat fzf ripgrep xclip)
 # ===============================================
 
 # Global variables
-DISK="" PARTITION_SEPARATOR="" BOOT_MODE=""
+DISK="" PARTITION_SEPARATOR="" BOOT_MODE="" CRYPT_UUID=""
 ENCRYPT="no" EFI_PART="" SWAP_PART="" CRYPT_PART="" ROOT_DEV="" HOME_DEV=""
-ROOT_SIZE_GB="" HOSTNAME="arch" USERNAME="fizzor" ROOT_PASS="123" USER_PASS="123"
-KERNEL="linux" GPU_DRIVERS="" DE_PKGS="" GREETER="" DE=""
+ROOT_SIZE_GB="" KERNEL="linux" GPU_DRIVERS="" DE_PKGS="" GREETER="" DE=""
 
 # Helper functions
 log()   { printf "\n\e[1;32m=== %s ===\e[0m\n" "$*"; }
+info() { printf '\n\e[93m %s \e[0m\n' "$*"; }
 error() { printf "\e[1;31m[ERROR] %s\e[0m\n" "$*" >&2; exit 1; }
 ask()   { read -rp "$1 [Y/n] " ans; [[ $ans =~ ^[Nn]$ ]] && return 1 || return 0; }
 askno() { read -rp "$1 [y/N] " ans; [[ $ans =~ ^[Nn]$ ]] && return 0 || return 1; }
 
-# =============================================================================
-# 1. PREPARATION
-# =============================================================================
-# log "Updating keyring & mirrors"
-# pacman -Sy --noconfirm archlinux-keyring pacman-contrib reflector rsync terminus-font   # Install required packages
-# sed -i 's/^#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf  # Enable parallel downloads
-# log "Optimizing mirrors for Hungary"
-# reflector -c "HU" -f 5 -l 20 --sort rate --save /etc/pacman.d/mirrorlist    # Optimize mirrors
-
-log "Console keyboard layout: Hungarian"; loadkeys "$KEYMAP"    # Set keyboard layout
-
-# Install required packages safely
-pacman -Sy --noconfirm archlinux-keyring && \
-pacman -Su --noconfirm && \
-pacman -S --noconfirm pacman-contrib reflector rsync terminus-font
-
-setfont ter-v22b    # Set console font
-
-# Enable parallel downloads robustly
-sed -i 's/^#\?ParallelDownloads\s*=.*/ParallelDownloads = 10/' /etc/pacman.conf
-
-# Generate stable mirror list with retry
-log "Optimizing mirrors for Hungary"
-for i in {1..5}; do
-    reflector --country HU \
-              --age 24 \
-              --fastest 5 \
-              --sort rate \
-              --protocol https \
-              --save /etc/pacman.d/mirrorlist && break
-    sleep 3
-done
+# info "Arch Linux Automated Installer"
 
 # =============================================================================
-# 2. BOOT MODE DETECTION
+# 0. KEYMAP SETUP
+# =============================================================================
+loadkeys "$KEYMAP"
+
+# =============================================================================
+# 1. BOOT MODE DETECTION
 # =============================================================================
 if [[ -f /sys/firmware/efi/fw_platform_size ]]; then
     case "$(cat /sys/firmware/efi/fw_platform_size)" in
@@ -68,7 +47,7 @@ else
 fi
 
 # =============================================================================
-# 3. INTERNET CONNECTION
+# 2. INTERNET CONNECTION
 # =============================================================================
 ensure_internet() {
     ping -c1 archlinux.org &>/dev/null && return 0
@@ -87,6 +66,20 @@ ensure_internet() {
 ensure_internet && log "Internet: OK"
 
 # =============================================================================
+# 3. KEYRING & MIRRORS UPDATE
+# =============================================================================
+log "KEYRING & MIRRORS UPDATE"
+echo "Updating keyring & mirrors..."
+pacman -Sy --noconfirm archlinux-keyring pacman-contrib &>/dev/null
+sed -i 's/^#\?ParallelDownloads\s*=.*/ParallelDownloads = 10/' /etc/pacman.conf
+
+echo "Optimizing mirrors for Hungary..."
+for i in {1..5}; do
+    reflector --country HU --age 24 --fastest 5 --sort rate --protocol https --save /etc/pacman.d/mirrorlist &>/dev/null && break
+    sleep 3
+done
+
+# =============================================================================
 # 4. DISK SELECTION
 # =============================================================================
 select_disk() {
@@ -102,11 +95,11 @@ select_disk() {
         read -rp "Select target disk number: " n
         [[ $n =~ ^[0-9]+$ ]] || { echo "Please enter a number"; continue; }
         (( n >= 1 && n <= ${#disks[@]} )) && break
-        echo "Invalid selection"
     done
 
     DISK=$(awk '{print $1}' <<< "${disks[n-1]}")
-    log "Target disk: $DISK"
+    # log "Target disk: $DISK"
+    info "Target disk: $DISK"
 }
 select_disk
 [[ $DISK == *nvme* ]] && PARTITION_SEPARATOR="p" || PARTITION_SEPARATOR=""
@@ -115,10 +108,10 @@ select_disk
 # 5. USER CONFIGURATION
 # =============================================================================
 log "User configuration"
-read -rp "Hostname [arch]: " HOSTNAME; HOSTNAME=${HOSTNAME:-arch}
-read -rp "Username [fizzor]: " USERNAME; USERNAME=${USERNAME:-fizzor}
-read -rsp "Root password [123]: " ROOT_PASS; echo; ROOT_PASS=${ROOT_PASS:-123}
-read -rsp "User password [123]: " USER_PASS; echo; USER_PASS=${USER_PASS:-123}
+read -rp "Hostname [$HOSTNAME]: " HOSTNAME; HOSTNAME=${HOSTNAME:-arch}
+read -rp "Username [$USERNAME]: " USERNAME; USERNAME=${USERNAME:-fizzor}
+read -rsp "Root password [$ROOT_PASS]: " ROOT_PASS; echo; ROOT_PASS=${ROOT_PASS:-123}
+read -rsp "User password [$USER_PASS]: " USER_PASS; echo; USER_PASS=${USER_PASS:-123}
 
 log "Kernel selection"
 echo "1) linux (vanilla)" ; echo "2) linux-zen" ; echo "3) linux-lts" ; echo "4) linux-hardened"
@@ -148,58 +141,56 @@ echo "3) Hyprland"
 read -rp "Choice [1]: " de; de=${de:-1}
 
 case "$de" in
-    # 2) DE_PKGS="i3-wm i3status dmenu xorg xorg-server xorg-xinit lightdm lightdm-gtk-greeter"; GREETER="lightdm";;
     2) DE_PKGS="i3-wm i3status dmenu xorg-server xorg-xinit xorg-xrandr lightdm lightdm-gtk-greeter"; GREETER="lightdm"; DE="i3";;
     3) DE_PKGS="hyprland wayland-protocols qt5-wayland qt6-wayland xdg-desktop-portal-hyprland hyprpaper hyprpicker greetd tuigreet"; GREETER="greetd"; DE="hyprland";;
     *) DE_PKGS=""; GREETER="";;
 esac
 
 if [[ -n $GREETER ]]; then
-    if [[ $de -eq 2 ]]; then
-        log "Selected: i3-wm"
-    else
-        log "Selected: Hyprland"
-    fi
+    [[ $de -eq 2 ]] && log "Selected: i3-wm" || log "Selected: Hyprland"
 else
     log "No desktop environment selected"
 fi
 
-# =============================================================================
-# 7. PARTITIONING
-# =============================================================================
 partition_disk() {
     log "Partitioning $DISK"
-    if ! askno "Enable full-disk encryption (LUKS) with default passphrase '$LUKS_PASS'?"; then
+    # Ask clearly whether to enable encryption
+    if ! askno "Enable full-disk encryption (LUKS)?"; then
         ENCRYPT="yes"
-        log "Encryption ENABLED → passphrase: $LUKS_PASS"
+        read -rp "Enter LUKS passphrase [default: $LUKS_PASS]: " input_pass
+        LUKS_PASS=${input_pass:-$LUKS_PASS}
+        log "Encryption ENABLED"
     else
         ENCRYPT="no"
         log "Encryption disabled"
     fi
 
-    # Determine swap size based on RAM
-    local ram_gb=$(free -g --si | awk '/^Mem:/ {print $2}')
-    local swap_size="16G"; (( ram_gb <= 16 )) && swap_size="${ram_gb}G"; (( ram_gb > 64 )) && swap_size="32G"
+    local ram_gb
+    ram_gb=$(free -g --si | awk '/^Mem:/ {print $2}')
+    local swap_size="16G"
+    (( ram_gb <= 16 )) && swap_size="${ram_gb}G"
+    (( ram_gb > 64 )) && swap_size="32G"
 
-    # Determine root size
     read -rp "Root size in GB [${DEFAULT_ROOT_GB}]: " ROOT_SIZE_GB; ROOT_SIZE_GB=${ROOT_SIZE_GB:-$DEFAULT_ROOT_GB}
     (( ROOT_SIZE_GB < 20 )) && error "Root too small"
     local root_size="${ROOT_SIZE_GB}G"
-
-    # Determine EFI size
-    # Probably Boot is a better naming
     local efi_size="1024M"
     [[ $BOOT_MODE == "32" ]] && efi_size="512M"
 
-    # !TODO: FIX encryption
-    clear; log "FINAL LAYOUT"; [[ $BOOT_MODE != "BIOS" ]] && echo "EFI → $efi_size"
-    [[ $BOOT_MODE == "BIOS" ]] && echo "BIOS → 1M"; echo "Swap → $swap_size"; echo "Root → $root_size"; echo "Home → rest"
-    [[ $ENCRYPT == yes ]] && echo "Encryption → YES"; echo
-    echo "ALL DATA WILL BE DESTROYED!"; ask "Continue?" || error "Aborted"
+    clear; log "FINAL LAYOUT"
+    [[ $BOOT_MODE != "BIOS" ]] && echo "EFI → $efi_size"
+    [[ $BOOT_MODE == "BIOS" ]] && echo "BIOS → 1M"
+    echo "Swap → $swap_size"; echo "Root → $root_size"; echo "Home → rest"
+    echo "Encryption → $ENCRYPT"
+    echo; info "ALL DATA WILL BE DESTROYED!"; ask "Continue?" || error "Aborted"
 
-    wipefs -af "$DISK" &>/dev/null; sgdisk --zap-all "$DISK" &>/dev/null
+    # Wipe previous maps/partitions
+    wipefs -af "$DISK" &>/dev/null
+    sgdisk --zap-all "$DISK" &>/dev/null
     dd if=/dev/zero of="$DISK" bs=1M count=50 status=none
-    dmsetup remove_all --deferred &>/dev/null; cryptsetup close cryptlvm &>/dev/null || true
+    # ensure no leftover dm mappings
+    dmsetup remove_all --deferred &>/dev/null || true
+    cryptsetup close cryptlvm &>/dev/null || true
 
     sgdisk -og "$DISK"; partprobe "$DISK"; sleep 2; udevadm settle
     local n=1
@@ -209,16 +200,31 @@ partition_disk() {
     sgdisk -n ${n}:0:+$swap_size -t ${n}:8200 -c ${n}:swap "$DISK"; SWAP_PART="${DISK}${PARTITION_SEPARATOR}${n}"; ((n++))
 
     if [[ $ENCRYPT == yes ]]; then
-        sgdisk -n ${n}:0:0 -t ${n}:8309 -c ${n}:LinuxCrypt "$DISK"; CRYPT_PART="${DISK}${PARTITION_SEPARATOR}${n}"
+        # create one partition that will be LUKS container (use Linux filesystem GUID; content will be LUKS)
+        sgdisk -n ${n}:0:0 -t ${n}:8300 -c ${n}:LinuxCrypt "$DISK"
+        CRYPT_PART="${DISK}${PARTITION_SEPARATOR}${n}"
         partprobe "$DISK"; sleep 2; udevadm settle
-        printf "%s" "$LUKS_PASS" | cryptsetup luksFormat --type luks2 --batch-mode --force-password "$CRYPT_PART"
-        printf "%s" "$LUKS_PASS" | cryptsetup open --type luks2 "$CRYPT_PART" cryptlvm
-        pvcreate /dev/mapper/cryptlvm; vgcreate vg0 /dev/mapper/cryptlvm
-        lvcreate -L "$root_size" -n root vg0; lvcreate -l 100%FREE -n home vg0
-        ROOT_DEV="/dev/mapper/vg0-root"; HOME_DEV="/dev/mapper/vg0-home"
+
+        # Format LUKS and open it (read pass from stdin; require cryptsetup installed in live env)
+        echo -n "$LUKS_PASS" | cryptsetup luksFormat --type luks2 --key-file=- "$CRYPT_PART" --batch-mode -q
+        echo -n "$LUKS_PASS" | cryptsetup open --key-file=- "$CRYPT_PART" cryptlvm
+
+        # create LVM on top of /dev/mapper/cryptlvm
+        pvcreate /dev/mapper/cryptlvm
+        vgcreate vg0 /dev/mapper/cryptlvm
+        lvcreate -L "$root_size" -n root vg0
+        lvcreate -l 100%FREE -n home vg0
+
+        ROOT_DEV="/dev/mapper/vg0-root"
+        HOME_DEV="/dev/mapper/vg0-home"
+
+        CRYPT_UUID=$(blkid -s UUID -o value "$CRYPT_PART")
+        [[ -z "$CRYPT_UUID" ]] && { echo "Failed to get UUID for $CRYPT_PART"; exit 1; }
     else
-        sgdisk -n ${n}:0:+$root_size -t ${n}:ea00 -c ${n}:root "$DISK"; ROOT_DEV="${DISK}${PARTITION_SEPARATOR}${n}"; ((n++))
-        sgdisk -n ${n}:0:0 -t ${n}:ea00 -c ${n}:home "$DISK"; HOME_DEV="${DISK}${PARTITION_SEPARATOR}${n}"
+        sgdisk -n ${n}:0:+$root_size -t ${n}:8300 -c ${n}:root "$DISK"
+        ROOT_DEV="${DISK}${PARTITION_SEPARATOR}${n}"; ((n++))
+        sgdisk -n ${n}:0:0 -t ${n}:8300 -c ${n}:home "$DISK"
+        HOME_DEV="${DISK}${PARTITION_SEPARATOR}${n}"
     fi
 
     partprobe "$DISK"; sleep 1; udevadm settle
@@ -232,19 +238,21 @@ partition_disk
 log "Formatting and mounting..."
 [[ -n $EFI_PART ]] && mkfs.fat -F32 "$EFI_PART"
 mkswap "$SWAP_PART"; swapon "$SWAP_PART"
-mkfs.ext4 -F -L root "$ROOT_DEV"; mkfs.ext4 -F -L home "$HOME_DEV"
-mount "$ROOT_DEV" /mnt; mkdir -p /mnt/home; mount "$HOME_DEV" /mnt/home
+mkfs.ext4 -F -L root "$ROOT_DEV"
+mkfs.ext4 -F -L home "$HOME_DEV"
+mount "$ROOT_DEV" /mnt
+mkdir -p /mnt/home; mount "$HOME_DEV" /mnt/home
 [[ -n $EFI_PART ]] && { mkdir -p /mnt/boot; mount "$EFI_PART" /mnt/boot; }
 
 log "Installing system..."
 pacstrap /mnt base base-devel $KERNEL linux-firmware lvm2 sudo networkmanager grub efibootmgr os-prober ntfs-3g $GPU_DRIVERS ${EXTRA_PKGS[@]} $DE_PKGS
 genfstab -U /mnt >> /mnt/etc/fstab
 
-
 # =============================================================================
 # 9. CHROOT & FINAL SETUP
 # =============================================================================
 log "Final configuration inside chroot..."
+export CRYPT_PART ROOT_DEV USERNAME ROOT_PASS USER_PASS HOSTNAME TIMEZONE KEYMAP DISK ENCRYPT KERNEL GPU_DRIVERS DE GREETER
 arch-chroot /mnt /bin/bash <<EOF
 set -euo pipefail
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
@@ -271,7 +279,18 @@ cat > /etc/hosts <<EOS
 127.0.1.1   $HOSTNAME.localdomain $HOSTNAME
 EOS
 
-systemctl enable NetworkManager lightdm
+[[ -n "$GREETER" ]] && systemctl enable NetworkManager $GREETER
+
+# Encryption hooks & kernel parameters
+if [[ "$ENCRYPT" == yes ]]; then
+    sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block encrypt lvm2 filesystems keyboard fsck)/' /etc/mkinitcpio.conf
+    sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=$CRYPT_UUID:cryptlvm root=/dev/mapper/vg0-root quiet splash\"|" /etc/default/grub
+    # safe to enable cryptodisk support in grub for UEFI and BIOS bootmodes
+    echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
+    #echo 'GRUB_PRELOAD_MODULES="cryptodisk luks lvm"' >> /etc/default/grub
+fi
+
+mkinitcpio -P
 
 # Bootloader
 if [[ -d /sys/firmware/efi ]]; then
@@ -279,74 +298,91 @@ if [[ -d /sys/firmware/efi ]]; then
 else
     grub-install --target=i386-pc $DISK
 fi
-grub-mkconfig -o /boot/grub/grub.cfg
 
-# Encryption hooks
-if cryptsetup status cryptlvm &>/dev/null 2>&1; then
-    sed -i 's/ block filesystems keyboard fsck/ encrypt lvm2 block filesystems keyboard fsck/' /etc/mkinitcpio.conf
-    mkinitcpio -P
-fi
+grub-mkconfig -o /boot/grub/grub.cfg
 
 # Users
 echo "root:$ROOT_PASS" | chpasswd
 useradd -m -G wheel "$USERNAME"
 echo "$USERNAME:$USER_PASS" | chpasswd
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
-EOF
 
-# =============================================================================
-# 10. Install yay AUR helper - fully automatic, no unbound errors, no quoting issues
-# =============================================================================
-log "Installing yay (AUR helper) automatically for user $USERNAME"
 
-export USERNAME
-export USER_PASS   # password of the normal user, not root
+echo "Setting up automatic yay installation for $USERNAME"
 
-arch-chroot /mnt /bin/bash <<EOF
+# Create script in user's home (inside /mnt)
+cat > /mnt/home/"$USERNAME"/install-yay.sh <<'EOS'
+#!/bin/bash
 set -euo pipefail
-pacman -Sy --noconfirm base-devel git
-echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
-sudo -u "$USERNAME" bash -c '
-    set -euo pipefail
-    cd /tmp
-    git clone https://aur.archlinux.org/yay.git
-    cd yay
-    makepkg --noconfirm --needed -si
-    cd /tmp
-    rm -rf yay
-'
-rm -f /etc/sudoers.d/$USERNAME
+echo "Installing yay for $USER..."
+sudo pacman -Syu --noconfirm --needed git base-devel
+git clone https://aur.archlinux.org/yay.git /tmp/yay
+cd /tmp/yay
+makepkg -si --noconfirm
+rm -rf /tmp/yay
+rm -f "$HOME/install-yay.sh"
+rm -f "$HOME/.bash_profile"
+echo "yay installed successfully!"
+EOS
+
+chmod +x /mnt/home/"$USERNAME"/install-yay.sh
+
+# Auto-run on first login
+cat > /mnt/home/"$USERNAME"/.bash_profile <<EOS
+#!/bin/bash
+echo "First boot setup – installing yay..."
+bash ~/install-yay.sh
+exec bash
+EOS
+
+# Fix ownership correctly (no hard-coded UID/GID)
+chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/install-yay.sh
+chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/.bash_profile
 EOF
 
-log "yay installation finished"
-
+# =============================================================================
+# 10. Install yay AUR helper
+# =============================================================================
+# log "Installing yay (AUR helper) automatically for user $USERNAME"
+# arch-chroot /mnt /bin/bash <<EOF
+# set -euo pipefail
+# pacman -Sy --noconfirm base-devel git
+# echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
+# sudo -u "$USERNAME" bash -c '
+#     cd /tmp
+#     git clone https://aur.archlinux.org/yay.git
+#     cd yay
+#     makepkg --noconfirm --needed -si
+#     cd /tmp; rm -rf yay
+# '
+# rm -f /etc/sudoers.d/$USERNAME
+# EOF
 
 # =============================================================================
-# 11. CLEANUP
+# 11. CLEANUP & FINISH
 # =============================================================================
-cleanup() {
-    log "Cleaning"
-    arch-chroot /mnt pacman -Scc --noconfirm
-    arch-chroot /mnt rm -rf /var/log/* /tmp/* /usr/share/doc/* /usr/share/man/*
-}
-cleanup
-
+log "Cleaning"
+arch-chroot /mnt pacman -Scc --noconfirm
+arch-chroot /mnt rm -rf /var/log/* /tmp/* /usr/share/doc/* /usr/share/man/*
 
 log "INSTALLATION COMPLETE!"
-echo
-echo "Summary:"
 echo "   Hostname           : $HOSTNAME"
 echo "   User               : $USERNAME"
 echo "   Kernel             : $KERNEL"
 echo "   GPU                : ${GPU_DRIVERS:-generic}"
-echo "   DE                 : ${DE}"
-echo "   Display Manager    : ${GREETER}"
-echo "   LUKS               : $ENCRYPT $( [[ $ENCRYPT == yes ]] && echo "(pass: $LUKS_PASS)" )"
+echo "   DE                 : ${DE:-none}"
+echo "   Display Manager    : ${GREETER:-none}"
+echo "   LUKS               : $ENCRYPT"
 echo "   AUR Helper         : yay"
 echo
-read -rp "Installation finished! Ready to unmount and reboot? [Y/n] " ans
-[[ $ans =~ ^[Nn]$ ]] && echo "Okay, exiting. Manually run: umount -R /mnt; swapoff -a; reboot" && exit 0
 
-umount -R /mnt
-swapoff -a
-reboot
+read -rp "Ready to unmount and reboot? [Y/n] " ans
+umount -Rl /mnt 2>/dev/null || umount -fRl /mnt
+mountpoint -q /mnt && sleep 3 && umount -fRl /mnt
+swapoff -a 2>/dev/null
+if [[ "$ENCRYPT" == yes ]]; then
+    lvchange -an vg0 2>/dev/null || true
+    cryptsetup close cryptlvm && log "LUKS container closed"
+fi
+sync
+reboot now
