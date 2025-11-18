@@ -11,7 +11,7 @@ HOSTNAME="arch"
 USERNAME="fizzor"
 ROOT_PASS="123"
 USER_PASS="123"
-EXTRA_PKGS=(vlc htop fastfetch alacritty neovim git curl wget unzip tree bat fzf ripgrep xclip)
+EXTRA_PKGS=(htop fastfetch alacritty neovim git curl wget unzip tree bat fzf ripgrep xclip)
 # ===============================================
 
 # Global variables
@@ -117,7 +117,7 @@ log "Kernel selection"
 echo "1) linux (vanilla)" ; echo "2) linux-zen" ; echo "3) linux-lts" ; echo "4) linux-hardened"
 read -rp "Choice [1]: " k; k=${k:-1}
 case "$k" in 2) KERNEL="linux-zen";; 3) KERNEL="linux-lts";; 4) KERNEL="linux-hardened";; *) KERNEL="linux";; esac
-log "Selected kernel: $KERNEL"
+info "Selected kernel: $KERNEL"
 
 log "GPU driver selection"
 echo "1) NVIDIA  2) AMD  3) Intel  4) VM  5) None"
@@ -129,7 +129,7 @@ case "$g" in
     4) GPU_DRIVERS="mesa";;
     *) GPU_DRIVERS="";;
 esac
-[[ -z $GPU_DRIVERS ]] && log "GPU: generic modesetting" || log "GPU drivers: $GPU_DRIVERS"
+[[ -z $GPU_DRIVERS ]] && info "GPU: generic modesetting" || info "GPU drivers: $GPU_DRIVERS"
 
 # =============================================================================
 # 6. DESKTOP ENVIRONMENT SELECTION
@@ -147,22 +147,27 @@ case "$de" in
 esac
 
 if [[ -n $GREETER ]]; then
-    [[ $de -eq 2 ]] && log "Selected: i3-wm" || log "Selected: Hyprland"
+    [[ $de -eq 2 ]] && info "Selected: i3-wm" || info "Selected: Hyprland"
 else
-    log "No desktop environment selected"
+    info "No desktop environment selected"
 fi
 
+# =============================================================================
+# 7. PARTITIONING
+# =============================================================================
 partition_disk() {
     log "Partitioning $DISK"
     # Ask clearly whether to enable encryption
-    if ! askno "Enable full-disk encryption (LUKS)?"; then
+    if askno "Enable full-disk encryption (LUKS)?"; then
         ENCRYPT="yes"
         read -rp "Enter LUKS passphrase [default: $LUKS_PASS]: " input_pass
         LUKS_PASS=${input_pass:-$LUKS_PASS}
-        log "Encryption ENABLED"
+        info "Encryption ENABLED"
+        echo
     else
         ENCRYPT="no"
-        log "Encryption disabled"
+        info "Encryption DISABLED"
+        echo
     fi
 
     local ram_gb
@@ -244,8 +249,8 @@ mount "$ROOT_DEV" /mnt
 mkdir -p /mnt/home; mount "$HOME_DEV" /mnt/home
 [[ -n $EFI_PART ]] && { mkdir -p /mnt/boot; mount "$EFI_PART" /mnt/boot; }
 
-log "Installing system..."
-pacstrap /mnt base base-devel $KERNEL linux-firmware lvm2 sudo networkmanager grub efibootmgr os-prober ntfs-3g $GPU_DRIVERS ${EXTRA_PKGS[@]} $DE_PKGS
+log "Installing system"
+pacstrap /mnt base base-devel $KERNEL linux-firmware lvm2 sudo networkmanager grub efibootmgr os-prober ntfs-3g $GPU_DRIVERS ${EXTRA_PKGS[@]} $DE_PKGS &>/dev/null
 genfstab -U /mnt >> /mnt/etc/fstab
 
 # =============================================================================
@@ -306,57 +311,25 @@ echo "root:$ROOT_PASS" | chpasswd
 useradd -m -G wheel "$USERNAME"
 echo "$USERNAME:$USER_PASS" | chpasswd
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
-
-
-echo "Setting up automatic yay installation for $USERNAME"
-
-# Create script in user's home (inside /mnt)
-cat > /mnt/home/"$USERNAME"/install-yay.sh <<'EOS'
-#!/bin/bash
-set -euo pipefail
-echo "Installing yay for $USER..."
-sudo pacman -Syu --noconfirm --needed git base-devel
-git clone https://aur.archlinux.org/yay.git /tmp/yay
-cd /tmp/yay
-makepkg -si --noconfirm
-rm -rf /tmp/yay
-rm -f "$HOME/install-yay.sh"
-rm -f "$HOME/.bash_profile"
-echo "yay installed successfully!"
-EOS
-
-chmod +x /mnt/home/"$USERNAME"/install-yay.sh
-
-# Auto-run on first login
-cat > /mnt/home/"$USERNAME"/.bash_profile <<EOS
-#!/bin/bash
-echo "First boot setup – installing yay..."
-bash ~/install-yay.sh
-exec bash
-EOS
-
-# Fix ownership correctly (no hard-coded UID/GID)
-chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/install-yay.sh
-chown "$USERNAME":"$USERNAME" /mnt/home/"$USERNAME"/.bash_profile
 EOF
 
 # =============================================================================
 # 10. Install yay AUR helper
 # =============================================================================
-# log "Installing yay (AUR helper) automatically for user $USERNAME"
-# arch-chroot /mnt /bin/bash <<EOF
-# set -euo pipefail
-# pacman -Sy --noconfirm base-devel git
-# echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
-# sudo -u "$USERNAME" bash -c '
-#     cd /tmp
-#     git clone https://aur.archlinux.org/yay.git
-#     cd yay
-#     makepkg --noconfirm --needed -si
-#     cd /tmp; rm -rf yay
-# '
-# rm -f /etc/sudoers.d/$USERNAME
-# EOF
+log "Installing yay (AUR helper) automatically for user $USERNAME"
+arch-chroot /mnt /bin/bash <<EOF
+set -euo pipefail
+echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
+pacman -Sy --noconfirm base-devel git
+sudo -u "$USERNAME" bash -c '
+    cd /tmp
+    git clone https://aur.archlinux.org/yay.git
+    cd yay
+    makepkg --noconfirm --needed -si
+    cd /tmp; rm -rf yay
+'
+rm -f /etc/sudoers.d/$USERNAME
+EOF
 
 # =============================================================================
 # 11. CLEANUP & FINISH
