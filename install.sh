@@ -69,15 +69,10 @@ ensure_internet && log "Internet: OK"
 # 3. KEYRING & MIRRORS UPDATE
 # =============================================================================
 log "KEYRING & MIRRORS UPDATE"
-echo "Updating keyring & mirrors..."
+# echo "Updating keyring & mirrors..."
 pacman -Sy --noconfirm archlinux-keyring pacman-contrib &>/dev/null
 sed -i 's/^#\?ParallelDownloads\s*=.*/ParallelDownloads = 10/' /etc/pacman.conf
-
-echo "Optimizing mirrors for Hungary..."
-for i in {1..5}; do
-    reflector --country HU --age 24 --fastest 5 --sort rate --protocol https --save /etc/pacman.d/mirrorlist &>/dev/null && break
-    sleep 3
-done
+echo "Keyring & mirrors updated."
 
 # =============================================================================
 # 4. DISK SELECTION
@@ -120,7 +115,11 @@ case "$k" in 2) KERNEL="linux-zen";; 3) KERNEL="linux-lts";; 4) KERNEL="linux-ha
 info "Selected kernel: $KERNEL"
 
 log "GPU driver selection"
-echo "1) NVIDIA  2) AMD  3) Intel  4) VM  5) None"
+echo "1) NVIDIA"
+echo "2) AMD"
+echo "3) Intel"
+echo "4) VM"
+echo "5) None"
 read -rp "Choice [1-5]: " g
 case "$g" in
     1) GPU_DRIVERS="nvidia nvidia-utils nvidia-settings libva-nvidia-driver";;
@@ -141,8 +140,12 @@ echo "3) Hyprland"
 read -rp "Choice [1]: " de; de=${de:-1}
 
 case "$de" in
-    2) DE_PKGS="i3-wm i3status dmenu xorg-server xorg-xinit xorg-xrandr lightdm lightdm-gtk-greeter"; GREETER="lightdm"; DE="i3";;
-    3) DE_PKGS="hyprland wayland-protocols qt5-wayland qt6-wayland xdg-desktop-portal-hyprland hyprpaper hyprpicker greetd tuigreet"; GREETER="greetd"; DE="hyprland";;
+    2) DE_PKGS="i3-wm i3status dmenu xorg-server xorg-xinit xorg-xrandr sddm"
+       GREETER="sddm"
+       DE="i3";;
+    3) DE_PKGS="hyprpaper xdg-desktop-portal xdg-desktop-portal-hyprland seatd polkit-kde-agent sddm dbus"
+       GREETER="sddm"
+       DE="hyprland";;
     *) DE_PKGS=""; GREETER="";;
 esac
 
@@ -250,7 +253,8 @@ mkdir -p /mnt/home; mount "$HOME_DEV" /mnt/home
 [[ -n $EFI_PART ]] && { mkdir -p /mnt/boot; mount "$EFI_PART" /mnt/boot; }
 
 log "Installing system"
-pacstrap /mnt base base-devel $KERNEL linux-firmware lvm2 sudo networkmanager grub efibootmgr os-prober ntfs-3g $GPU_DRIVERS ${EXTRA_PKGS[@]} $DE_PKGS &>/dev/null
+pacstrap /mnt base base-devel $KERNEL linux-firmware lvm2 sudo networkmanager grub efibootmgr os-prober ntfs-3g \
+    ${EXTRA_PKGS[@]} ${DE_PKGS} || true   # continue even if nvidia fails here
 genfstab -U /mnt >> /mnt/etc/fstab
 
 # =============================================================================
@@ -332,12 +336,80 @@ rm -f /etc/sudoers.d/$USERNAME
 EOF
 
 # =============================================================================
-# 11. CLEANUP & FINISH
+# 11. NVIDIA + Hyprland specific fixes (AUR)
+# =============================================================================
+if [[ "$DE" == "hyprland" ]]; then
+
+    # -------------------------------------------------------
+    # Configure SDDM to use Wayland (if using sddm)
+    # -------------------------------------------------------
+    if [[ "${GREETER}" == "sddm" ]]; then
+        arch-chroot /mnt /bin/bash << EOF
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/wayland.conf << 'SDDM'
+[General]
+DisplayServer=wayland
+
+[Wayland]
+Enable=true
+SDDM
+EOF
+    fi
+
+    # -------------------------------------------------------
+    # NVIDIA: patched Hyprland + DRM modesetting + initramfs
+    # -------------------------------------------------------
+    if [[ "${GPU_DRIVERS:-}" == *"nvidia"* ]]; then
+        arch-chroot /mnt /bin/bash -c "yay -S --noconfirm --needed hyprland-nvidia-git || true"
+        arch-chroot /mnt /bin/bash "echo 'options nvidia_drm modeset=1' > /etc/modprobe.d/nvidia.conf"
+EOF
+
+        arch-chroot /mnt mkinitcpio -P || true
+
+    else
+        # ---------------------------------------------------
+        # Non-NVIDIA: official Hyprland package
+        # ---------------------------------------------------
+        arch-chroot /mnt /bin/bash << EOF
+yay -S --noconfirm --needed hyprland-git || true
+EOF
+    fi
+
+    # -------------------------------------------------------
+    # seatd is required for session permissions
+    # -------------------------------------------------------
+    arch-chroot /mnt /bin/bash << EOF
+systemctl enable seatd || true
+EOF
+
+    # Hyprland Wayland session file
+    arch-chroot /mnt /bin/bash << EOF
+mkdir -p /usr/share/wayland-sessions
+cat > /usr/share/wayland-sessions/hyprland.desktop << 'HYPR'
+[Desktop Entry]
+Name=Hyprland
+Comment=A dynamic tiling Wayland compositor
+Exec=/usr/bin/Hyprland
+Type=Application
+HYPR
+EOF
+
+    # -------------------------------------------------------
+    # Optional extras
+    # -------------------------------------------------------
+    arch-chroot /mnt /bin/bash -c "yay -S --noconfirm --needed bibata-cursor-theme waybar-hyprland-git || true"
+
+fi
+
+
+# =============================================================================
+# 12. CLEANUP & FINISH
 # =============================================================================
 log "Cleaning"
 arch-chroot /mnt pacman -Scc --noconfirm
 arch-chroot /mnt rm -rf /var/log/* /tmp/* /usr/share/doc/* /usr/share/man/*
 
+clear
 log "INSTALLATION COMPLETE!"
 echo "   Hostname           : $HOSTNAME"
 echo "   User               : $USERNAME"
